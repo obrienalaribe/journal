@@ -32,7 +32,7 @@ Below i describe where it held, where it broke, what I'd redo. Not best practice
 Two conditions:
 
 1. **Clear outcome.** When the task has a measurable success i.e a bug fix or hotfix. If a reviewer would know in two minutes, the harness can too.
-2. **Reduce human loops with agent**: engineering time is a scarce resource that should be spent on more high value tasks, important but low urgency tasks can be delegated
+2. **Money vs time spent**: Engineers can spend more high value tasks, important but low urgency tasks can be delegated
 
 The rule I use: if I can write a one-paragraph spec naming inputs, outputs, and success checklist without "could" or "maybe", the harness fits. Otherwise no.
 
