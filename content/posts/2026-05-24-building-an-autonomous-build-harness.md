@@ -1,156 +1,156 @@
 +++
-title = "What I learned building an autonomous build harness"
+title = "What I learned from building an agent harness"
 date = 2026-05-24T00:00:00Z
 draft = false
 tags = ["agents", "harness-engineering", "claude-code", "ralph-loop", "hitl"]
-description = "A retrospective on building a single-tenant Claude Code plugin that drives a multi-phase build loop end-to-end. What worked, what broke, and what I'd redo."
+description = "A retrospective on building a single-tenant Claude Code plugin that drives a multi-phase build loop end-to-end. What worked, what broke, what I'd redo."
 +++
 
-> This is a retrospective on a plugin called *buildkit* I built to test whether the main agent in a Claude Code session can serve as a supervisor, driving a workflow, resolving routine blocks, and escalating real decisions back to a human. The lessons below generalize beyond the plugin. Fork the ideas, not the implementation.
+> Retrospective on a Claude Code plugin called *buildkit*. The point was to test whether the main agent in a session can act as a supervisor: drive a workflow, resolve routine blocks, escalate the real decisions. The lessons generalize beyond the plugin. Fork the ideas.
 
-Harness engineering has had a moment. The pattern keeps surfacing. [OpenAI wrote about how they run their own engineering this way](https://openai.com/index/harness-engineering/). Claude Code's sub-agent model points at the same shape. Every serious team building dev tools is shipping something that looks like "an orchestrator agent that holds a workflow and dispatches workers". The idea itself isn't new. It's a state machine wrapping LLM calls. But the surface around it has matured enough that you can build a useful one in a weekend instead of a quarter.
+Harness engineering has had a moment. [OpenAI runs their engineering this way](https://openai.com/index/harness-engineering/). Claude Code's sub-agent model points at the same shape. Every serious dev-tools team is shipping some flavor of "orchestrator agent that holds a workflow and dispatches workers". The idea isn't new (it's a state machine wrapping LLM calls), but the tooling has matured enough that you can build a useful one in a weekend.
 
-A harness, briefly: a thin layer that takes a unit of work, drives an agent through a defined workflow, and exits with a result. The harness owns the lifecycle. The agents inside it own the cognition. It shines when the workflow is well-shaped but the work inside it requires judgement, the kind of repetitive-but-not-trivial labor that's expensive to do by hand and risky to fully automate.
+A harness is a thin layer that takes a unit of work, drives an agent through a defined workflow, and exits with a result. It owns the lifecycle. The agents inside own the cognition. It pays off for tedious-but-non-trivial labor that's expensive to do by hand and risky to fully automate.
 
-Why it matters now: most teams have ideas that don't justify dedicated engineering time. Internal tools, POCs, side projects that would be useful if they shipped but aren't valuable enough to staff. A harness changes the math. You spend tokens instead of hours. If the trade is "a few dollars and ten minutes" versus "half a day of engineering time", the small idea suddenly ships.
+Most teams have ideas that don't justify dedicated engineering time. Internal tools, POCs, side projects worth shipping but not worth staffing. A harness changes the math: spend tokens, not hours. If the trade is "a few dollars and ten minutes" versus "half a day", the small idea ships.
 
-I started buildkit as experimental work. Purely to see if the pattern held up for me. The question I wanted to answer wasn't "can an agent write code" (that's been answered) but something more specific to my workflow:
+The question I wanted to answer wasn't "can an agent write code" (that's answered) but:
 
-> **Can the main agent in a Claude Code or Codex session serve as a supervisor, driving a multi-step workflow, resolving routine blocks in-flight, and escalating only the genuinely ambiguous calls back to me or the team?**
+> **Can the main agent in a Claude Code or Codex session serve as a supervisor: driving a multi-step workflow, resolving routine blocks in-flight, escalating only the genuinely ambiguous calls back to me or the team?**
 
-That's a different shape than a one-shot "fix this bug" prompt. It's a supervised session, where the supervisor is the foreground agent I'm already talking to, and the workers are spawned for specific phases. The supervisor reads the block log, decides whether it's a class it knows how to triage, and either patches and resumes or hands the decision back up.
+That's not a one-shot "fix this bug" prompt. It's a supervised session. The supervisor is the foreground agent. Workers spawn for specific phases. The supervisor reads block logs, decides if it's a triagable class, then patches and resumes or escalates.
 
 The split I landed on is **afk versus hitl per work-unit**:
 
-- **afk** issues run the full loop (intake, build, proof, review, PR, merge) without me. The supervisor handles every block-reason it knows how to triage. I find out the work shipped when I see the green merge.
-- **hitl** issues run the same loop but block at PR-open and refuse to merge until I review the diff and post evidence I actually did. Anything where I want a human eye on the diff (auth, schema, secrets, dependency bumps) gets flagged hitl. Everything else runs afk.
+- **afk** issues run the full loop (intake, build, proof, review, PR, merge) without me. I find out the work shipped when I see the green merge.
+- **hitl** issues run the same loop but block at PR-open. They don't merge until I review the diff and post evidence. Auth, schema, secrets, dep bumps get flagged hitl. Everything else runs afk.
 
-The rest of this post is what I learned actually building that out: where it held, where it broke, and what I'd redo from first principles. None of it is best practice. It's just what I figured out the hard way.
+The rest is what I learned: where it held, where it broke, what I'd redo. None of this is best practice.
 
 ---
 
 ## How this compares to Ralph loops
 
-If you've been around agentic-engineering circles in 2025-2026, you've seen [Geoffrey Huntley's Ralph loop](https://devinterrupted.substack.com/p/inventing-the-ralph-wiggum-loop-creator) pattern. The short version: a bash while-loop that feeds the same prompt to a coding agent over and over until the work is done. The filesystem is the memory; conversation history isn't. Each iteration starts with the same allocated context (same PROMPT.md, same spec, same goal), and what changes between iterations is the codebase on disk. The pattern works because LLMs degrade as context fills. Fresh context per iteration is the whole point, not a side effect. Huntley's framing is that "the more you allocate, the more likely you are to get bad outcomes." [OpenAI shipped a built-in Ralph loop in Codex CLI in April 2026](https://ralphable.com/blog/codex-goal-command-ralph-loop-openai-built-in-autonomous-coding-agent-2026), which sealed it as a mainstream pattern.
+[Geoffrey Huntley's Ralph loop](https://devinterrupted.substack.com/p/inventing-the-ralph-wiggum-loop-creator): a bash while-loop that feeds the same prompt to a coding agent until the work is done. Filesystem is the memory; conversation history isn't. Same context every iteration, different codebase on disk. The pattern works because LLMs degrade as context fills. Fresh context is the point. Huntley: "the more you allocate, the more likely you are to get bad outcomes." [OpenAI shipped a built-in Ralph loop in Codex CLI in April 2026](https://ralphable.com/blog/codex-goal-command-ralph-loop-openai-built-in-autonomous-coding-agent-2026), making it mainstream.
 
-The harness I built shares more with Ralph than I initially admitted to myself. Both run a fresh-context iteration per round. Both use the filesystem as durable memory. Both bound iteration count and exit on success criteria. The skeleton is the same. Where they actually diverge is what each iteration owns:
+The harness I built shares more with Ralph than I first admitted. Both run fresh-context iterations. Both use filesystem memory. Both bound iteration count. The skeleton is identical. Where they diverge:
 
-- Ralph runs one prompt, one phase, one goal, and trusts the agent to read its own learnings log between iterations. The reusable knowledge gets curated into a `progress.txt` or `AGENTS.md` that the next iteration reads first.
-- My build-loop runs a phase state machine (build, proof, audit, PR, merge), where each phase gets a different role-scoped prompt and the supervisor can patch or escalate between phases.
+- Ralph runs one prompt and trusts the agent to read its own learnings log between iterations. Knowledge gets curated into a `progress.txt` or `AGENTS.md`.
+- My build-loop runs a phase state machine (build, proof, audit, PR, merge). Each phase gets a role-scoped prompt. The supervisor patches or escalates between phases.
 
-A useful framing: a Ralph loop trusts the worker to figure out the workflow inside its single prompt; my harness splits the workflow into named phases and gates each one. Huntley himself calls Ralph "merely the foundation". Multi-phase orchestrators like mine are one direction you can take the foundation. Neither is strictly better. Ralph stays leaner; the harness catches more class-of-error per iteration.
+Ralph trusts the worker. My harness gates phases. Huntley calls Ralph "merely the foundation". Multi-phase orchestrators are one direction you can take the foundation. Neither is strictly better. Ralph stays leaner; the harness catches more class-of-error per iteration.
 
-What the harness is missing from Ralph: the human-curated learnings file. I'll come back to this.
+What the harness is missing from Ralph: the human-curated learnings file. More on that below.
 
 ---
 
 ## A note on alternative kits
 
-If you want a fuller plugin straight off the shelf, two are worth a serious look. [obra/superpowers](https://github.com/obra/superpowers) ships ~15 skills covering brainstorming, plan-writing, plan-executing, dispatching parallel agents, code review cycles, worktree management, debugging, verification. It's a curated methodology kit at v5.1.0, multi-harness (Claude Code, Codex, Cursor, Gemini, OpenCode). [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/engineering) ships a tighter engineering-focused set: grill-with-docs, to-issues, triage, tdd, improve-codebase-architecture.
+[obra/superpowers](https://github.com/obra/superpowers) ships ~15 skills (brainstorming, planning, dispatching parallel agents, code review, worktree management, debugging, verification). Curated, v5.1.0, multi-harness. [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/engineering) ships tighter engineering skills (grill-with-docs, to-issues, triage, tdd, improve-codebase-architecture).
 
-My harness isn't trying to compete with either. It's two skills, a shared parser lib, and a ~600-LOC state-machine loop. Intentionally hand-readable, intentionally opinionated. If you want a kit, take superpowers or matt's. If you want a state-machine skeleton you'll fork and shape to your own workflow, take what I built. Different products, different audiences. The tradeoff is real: I trade breadth (their many skills) for a small surface you can read in an afternoon.
+My harness isn't competing with either. Two skills, a shared parser, ~600 LOC of state machine. Hand-readable, opinionated. If you want a kit, take superpowers or matt's. If you want a state-machine skeleton to fork and reshape, take what I built. I trade breadth for a surface you can read in an afternoon.
 
 ---
 
 ## On AskUserQuestion and Anthropic's workshop
 
-The grill pattern in my architect skill, where the supervisor asks operator questions before locking acceptance criteria, uses Claude Code's `AskUserQuestion` tool. That tool isn't just my idea. Anthropic backs it directly in their [How We Claude Code workshop](https://github.com/anthropics/cwc-workshops/tree/main/how-we-claude-code) and the [accompanying video](https://www.youtube.com/watch?v=IlqJqcl8ONE). The workshop's three-phase walkthrough maps almost cleanly onto what my harness does:
+The architect's grill uses Claude Code's `AskUserQuestion`. Anthropic backs the pattern in their [How We Claude Code workshop](https://github.com/anthropics/cwc-workshops/tree/main/how-we-claude-code) and the [video walkthrough](https://www.youtube.com/watch?v=IlqJqcl8ONE). The workshop's three phases map onto what my harness does:
 
-- **Phase 1 (interview-driven brainstorm)** ≈ architect grill via `AskUserQuestion` before locking ACs
-- **Phase 2 (divergent planning)** ≈ operator picks `mode: afk` vs `mode: hitl` and other branching choices during grill
-- **Phase 3 (verifiable build)** ≈ proof gate + spec audit + HITL human-review citation
+- **Phase 1 (interview brainstorm)** ≈ architect grill via `AskUserQuestion`
+- **Phase 2 (divergent planning)** ≈ operator picks `mode` and branching choices
+- **Phase 3 (verifiable build)** ≈ proof gate + spec audit + HITL citation
 
-The interview pattern itself isn't original to me. [Matt Pocock's `grill-with-docs` skill](https://github.com/mattpocock/skills/tree/main/skills/engineering/grill-with-docs) encodes a Socratic interview that produces a domain glossary, the same general shape applied to a different layer. I applied the interview pattern one layer deeper: my grill produces an issue-to-contract mapping with a citation invariant on the unblock. The framing is matt's; the citation enforcement is mine.
-
----
-
-## When the harness is actually worth it
-
-The pattern holds when three things line up:
-
-1. **The work has a clear contract.** Measurable success criteria, named inputs and outputs, a test or check that can stand in for "is this done?". If a human reviewer would know in two minutes whether the work is correct, a harness can know in two minutes.
-2. **The decisions are made before the harness starts.** The harness executes. It does not deliberate. If the spec contains "decide X or Y based on context", you've already lost. The deliberation belongs in the issue body, not in the loop.
-3. **The cost-per-attempt is bounded and you can afford a few failed attempts.** Token costs are real but capped. Engineering time is real and uncapped. If the work is the kind where you'd happily take a few rounds to get right, a harness can absorb those rounds without burning your day.
-
-Where the pattern broke for me: anything that asked the agents to make architectural choices. "Refactor for cleanliness", "decide between approaches", "explore the design space". These look like work but they're actually decisions disguised as work. The harness picks the first plausible answer and rationalizes it. By the time I'm re-reviewing the full diff, I've spent more time than if I'd just done the work myself.
-
-The blunt rule I use now: if I can write a one-paragraph spec naming the inputs, outputs, and success check without using the words "should" or "maybe", the harness is a fit. Otherwise it's not.
+The interview pattern isn't mine. [Matt Pocock's `grill-with-docs`](https://github.com/mattpocock/skills/tree/main/skills/engineering/grill-with-docs) is a Socratic interview producing a domain glossary. I applied it one layer deeper: produce an issue-to-contract mapping with a citation invariant on the unblock. Framing is matt's; citation enforcement is mine.
 
 ---
 
-## Splitting rules from workflows is the design choice that mattered most
+## When the harness is worth it
 
-The cleanest pattern that emerged from all the rewrites: anything mechanical goes in scripts, anything that requires judgement goes in markdown. Mechanical means "extract this section", "kill this port", "retry on a 5xx". The script either does it or it doesn't. Judgement means "when to ask the operator", "what counts as a distinct behavior", "how to triage a block". That's an LLM or human call.
+Three conditions:
 
-This split matters because stale prose is silent. There's no compile error for "this rule contradicts that rule". I caught one drift instance partway through where a SKILL.md still listed an XML tag as required while the parser had stopped reading it. The harness kept running. The agents kept producing plausible output. The drift only surfaced when I happened to grep for it.
+1. **Clear contract.** Measurable success, named I/O, a test that means "done". If a reviewer would know in two minutes, the harness can too.
+2. **Decisions made before the harness starts.** It executes, doesn't deliberate. "Decide X or Y based on context" already loses. Deliberation belongs in the issue body.
+3. **Bounded cost, tolerant of failed attempts.** Token costs are capped, engineering time isn't. If you'd take a few rounds to get it right anyway, the harness can absorb them.
 
-What worked was pairing every rule with a script that enforces it. The grill-interview rule in the architect skill has a strict-mode validator that refuses to pass without an audit log. The HITL gate rule has a regex check on the unblock command. When the rule changes, the enforcement breaks loudly. When the enforcement changes, the rule reads as obviously stale.
+Where it broke: anything asking the agents to make architectural choices. "Refactor for cleanliness", "decide between approaches", "explore the design space". Decisions disguised as work. The harness picks the first plausible answer and rationalizes it.
 
-If you can't answer "where does this break loudly?", the rule will rot. Always pair.
+The rule I use: if I can write a one-paragraph spec naming inputs, outputs, and success check without "should" or "maybe", the harness fits. Otherwise no.
 
 ---
 
-## Bound the cost and time, or it'll bite you
+## Rules vs workflows is the design call that mattered most
 
-Four hard caps, all small, all easy to raise per-issue if needed: a per-call dollar budget, a per-agent wall-clock timeout, a per-proof-command timeout, and a maximum review-rounds count. On top of those, the auditor runs with a tighter tool permission set. It's read-only by design, so it can't mutate code even if budget allowed it.
+Mechanical work goes in scripts. Judgement goes in markdown. Mechanical: "extract this section", "kill this port", "retry on 5xx". Judgement: "when to ask the operator", "what's a distinct behavior", "how to triage a block".
 
-The dollar budget is currently shared across builder and auditor, which is sloppy. The auditor's a read-only role and could easily run on a quarter of the budget. That's on my "would do differently" list below.
+Stale prose is silent. No compile error catches "this rule contradicts that one". I caught one drift instance where a SKILL.md still listed an XML tag as required but the parser had stopped reading it. The harness kept running and producing plausible output. I only found it by grepping.
 
-What I missed for too long: there's no alert at round two of three. The first time the operator finds out an issue is stuck is when the cap hits. A simple "round 2 of 3" GitHub comment would let me intervene before the budget expires. Cheap fix I haven't shipped.
+The fix: pair every rule with a script that enforces it. Grill-interview rule has a strict-mode validator that fails without an audit log. HITL gate rule has a regex on the unblock command. When the rule changes, enforcement breaks loudly. When enforcement changes, the rule reads as stale.
 
-Treat agent budgets like you'd treat a runaway cron's resource limits. Default tight, raise with evidence, alert before the hard stop.
+If you can't answer "where does this break loudly?", the rule will rot.
+
+---
+
+## Bound the cost and time
+
+Four hard caps: per-call dollar budget, per-agent wall-clock timeout, per-proof timeout, max review rounds. Plus the auditor runs with a tighter tool permission set: read-only by design, can't mutate code regardless of budget.
+
+The dollar budget is currently shared across builder and auditor. Sloppy. The auditor's read-only and could run on a quarter of the budget. On my "would redo" list.
+
+What I missed: no alert at round two of three. The operator finds out at the cap. A "round 2 of 3" GitHub comment would let me intervene early. Cheap, unshipped.
+
+Treat agent budgets like a runaway cron's resource limits. Default tight, raise with evidence, alert before the hard stop.
 
 ---
 
 ## XML is about the parser, not the model
 
-I migrated from markdown headings to XML section tags because the harness needed to inject only the relevant slice per agent. The builder reads core acceptance criteria plus the agent contract. The auditor reads only the acceptance criteria plus the GitHub issue body, not the contract, so it can't grade the implementation against the implementation hints. Two roles, two slices, one source document. With XML tags this is a tiny regex helper. With markdown headings it'd be fragile boundary detection.
+I moved from markdown headings to XML tags so the harness could inject one slice per agent. Builder reads core ACs plus agent contract. Auditor reads core ACs plus issue body, not the contract (so it can't grade implementation against implementation hints). Two roles, two slices, one document. XML makes this a tiny regex. Markdown headings would need fragile boundary detection.
 
-Anthropic's guide also says XML helps the model parse unambiguously, but I haven't seen benchmarks that prove logit-level attention is stronger for `<tag>` than `## heading`. I treat the model claim as plausible-but-unproven and the harness claim as obvious.
+Anthropic's guide says XML helps the model parse unambiguously, but I haven't seen logit-level benchmarks proving `<tag>` beats `## heading`. I treat the model claim as plausible-but-unproven and the harness claim as obvious.
 
-If your reason for XML is "the parser needs it", ship XML. If your reason is "the LLM will think harder", the evidence is weaker.
+If your reason for XML is "parser needs it", ship XML. If it's "LLM will think harder", the evidence is weaker.
 
-One vocabulary note while we're here. I call this role the **auditor**, not a reviewer. The distinction matters because the role doesn't see the diff, can't mutate the worktree, and outputs only a binary verdict. That's a compliance check against a spec, not a code review. I reserve "reviewer" for the human at the HITL gate (who actually reads the diff and posts a citable comment) and for orthogonal-falsification agents (multi-perspective adversarial check, different concept). Three separate things, three different words.
+Vocabulary note: I call this role the **auditor**, not a reviewer. It doesn't see the diff, can't mutate the worktree, outputs a binary verdict. That's a compliance check, not a code review. "Reviewer" is the human at the HITL gate (who reads the diff and posts a citable comment) or the orthogonal-falsification agents (multi-perspective check, different concept). Three different things, three different words.
 
 ---
 
 ## HITL gates only work if the human actually loops
 
-The first version of my HITL gate fired correctly. It blocked at PR-open, waited for an unblock with a "human approved" reason. What I noticed only on review: the gate took 37 seconds from block to unblock-with-approval. There was no human in those 37 seconds. The agent had reviewed its own PR and stamped it.
+The first HITL gate fired correctly: blocked at PR-open, waited for an unblock with "human approved". On review, the gate took 37 seconds from block to unblock-with-approval. No human in those 37 seconds. The agent reviewed its own PR and stamped it.
 
-The fix was small: a regex on the unblock reason. It now has to cite a real PR comment ID or a git commit SHA. A reason that doesn't reference an auditable artifact is rejected. This forces the loop to actually wait for me to open the PR diff in my terminal, post a comment, and pass the comment ID back as the unblock evidence. The gate is now provable from the events log alone.
+The fix: a regex on the unblock reason requiring a PR comment ID or git commit SHA. Reasons without an auditable artifact get rejected. The gate is now provable from the events log alone.
 
-Generalizing: if a contract says "a human did X", the enforcement should require a machine-checkable artifact that only a human could have produced. Otherwise the contract is theater.
+If a contract says "a human did X", enforcement should require a machine-checkable artifact only a human could have produced. Otherwise the contract is theater.
 
 ---
 
 ## Two quiet auth foot-guns
 
-First one: any spawned claude process inherits the parent environment, including `ANTHROPIC_API_KEY` if it's set. If the variable is present, claude bills against the API key. If not, claude bills against the OAuth subscription. The harness strips the variable from the spawned env explicitly. Without that strip, any shell session with the env set would silently fall back to API-key billing. There's no warning in the agent transcript. You find out from the invoice.
+Any spawned claude inherits the parent env, including `ANTHROPIC_API_KEY`. If set, claude bills against the API key. If not, OAuth subscription. The harness strips the variable explicitly. Without the strip, any shell session with the env set silently falls back to API-key billing. No warning in the transcript. You find out from the invoice.
 
-Second one: there's a `--bare` flag I was tempted to use for stricter read-only enforcement on the auditor. It forces API-key auth and breaks subscription. The code comment about why I didn't use it stays as a tripwire. The right answer is `--disallowedTools` (write, edit, notebook-edit), which gets the same read-only effect without breaking auth.
+A `--bare` flag for stricter read-only on the auditor forces API-key auth and breaks subscription. The code comment about why I didn't use it stays as a tripwire. The right answer is `--disallowedTools` (write, edit, notebook-edit): same effect, no auth breakage.
 
-Assume your auth chain has at least one path that silently downgrades you. Strip it explicitly. Test where you're billed.
+Assume your auth chain has at least one path that silently downgrades you. Strip it. Test where you're billed.
 
 ---
 
 ## State that survives a crash
 
-My harness keeps two files per issue. One is a state checkpoint: a JSON snapshot of where the loop is right now. The other is an append-only event log: a JSON-lines stream of every state transition. The checkpoint lets `continue` fast-forward to the right step after a crash. The event log lets me reconstruct what happened.
+Two files per issue: a JSON state checkpoint and an append-only JSONL event log. The checkpoint lets `continue` fast-forward after a crash. The event log lets me reconstruct what happened.
 
-The trick is caching everything immutable on the checkpoint at intake. Reading the context document fresh on every loop iteration was a wasted syscall. Re-running default-branch detection on every continue was a wasted network round-trip to gh. Persisting these on the checkpoint at intake eliminated several redundant operations per round and made cold continues read from the same cached values as warm rounds.
+Cache everything immutable on the checkpoint at intake. Reading context.md fresh every iteration was a wasted syscall. Re-running default-branch detection on every continue was a wasted gh round-trip. Persisting these at intake eliminated several redundant ops per round and made cold continues read from the same cache as warm ones.
 
-For any agent loop: write the checkpoint before any side-effect, and cache anything immutable at the earliest possible step.
+For any agent loop: write the checkpoint before any side-effect, cache immutables early.
 
 ---
 
 ## Single-tenant by choice
 
-Refusing to support concurrent builds eliminated more complexity than any other constraint. No locking semantics, no race windows, no shared-state coordination, no audit-trail interleave. The system fits in your head when only one operator is ever using it at a time.
+Refusing concurrent builds eliminated more complexity than any other constraint. No locks, no races, no shared-state coordination. The system fits in your head when one operator uses it at a time.
 
-I had a lockfile mechanism sitting in the codebase for months. A busy-poll on a per-clone lock file with a 60-second timeout. Added during an early phase when I was nervous about concurrent operators. Then I removed concurrent support entirely. The lockfile stayed. It was dead defense for a threat model I'd already excluded.
+I had a lockfile mechanism for months: busy-poll on a per-clone lock file, 60-second timeout. Added when I was nervous about concurrent operators. Then I removed concurrent support entirely. The lockfile stayed. Dead defense for a threat model I'd already excluded.
 
-When I finally noticed and dropped it, the diff was clean. No callers were depending on the lock semantics, just on the wrapper. Pure paranoia for a non-existent scenario.
+When I finally dropped it, the diff was clean. No callers depended on the lock semantics. Pure paranoia for a non-existent scenario.
 
 When the threat model changes, audit the defenses you no longer need. Paranoia accretes.
 
@@ -158,47 +158,45 @@ When the threat model changes, audit the defenses you no longer need. Paranoia a
 
 ## What I'd redo
 
-A few things I'd do differently from scratch.
+I'd put static prompt parts in a file and pass via `--system-prompt-file`. The prompt cache rewards stable prefixes. My current code rebuilds the prompt inline every round and never gets a cache hit.
 
-I'd put the static parts of the prompt in a file and pass it via `--system-prompt-file`. Anthropic's prompt cache rewards stable prefixes. My current code rebuilds the prompt inline every round and never gets a cache hit. The estimated saving on multi-round issues is real, I just haven't shipped it yet.
+I'd tighten the auditor's budget below the builder's. Same flag, smaller value. Read-only audits shouldn't share the builder's headroom.
 
-I'd tighten the auditor's budget below the builder's. Same flag, smaller value. It's a read-only audit; it shouldn't share the builder's budget headroom.
+I'd post a "round 2 of 3" alert to the GitHub issue. Burning the third round silently is wasteful when a human could've intervened cheaply.
 
-I'd post a "round 2 of 3" alert to the GitHub issue, not just to my local log. Burning the third round silently is wasteful when a human could've intervened cheaply at round two.
+I'd write at least one unit test of the merge path. Two latent bugs (an unawaited async retry, a wrong gh-merge flag) survived three releases because the only test was live dogfooding. Five lines of test would've caught both at design time.
 
-I'd write at least one unit test of the merge path before adding any more state-machine complexity. Two latent bugs there (an unawaited async retry, and a wrong gh-merge flag) survived three releases because the only test was live dogfooding. Each release shipped a fix for the prior release's silent regression. Five lines of test would've caught both at design time.
+I'd treat my own notes with the same suspicion as the code. Several bullets in my "what I learned" notes were wrong against the live source by the time I came to write this. Stale notes are worse than no notes when an LLM reads them as ground truth.
 
-I'd treat my own notes with the same suspicion as the code. Several bullets in my "what I learned" notes turned out to be wrong against the live source by the time I came to write this. Stale notes are worse than no notes when an LLM reads them as ground truth.
+**I'd steal Ralph's `progress.txt` + `AGENTS.md` pattern.** My per-round transcripts are forensic dead-ends: I read them when an issue is blocked, never again. Ralph curates a `## Codebase Patterns` section at the top of `progress.txt` that the next iteration reads first. Knowledge accretes across iterations instead of being trapped in per-round logs. The closest the harness gets is the architect's `<grill_log>`, which only captures pre-build decisions. This is the biggest borrow I'd take from the wider ecosystem.
 
-**I'd steal Ralph's `progress.txt` + `AGENTS.md` pattern.** Right now my per-round transcripts are forensic dead-ends. I read them when an issue is blocked, never again afterward. Ralph's loop curates a `## Codebase Patterns` section at the top of `progress.txt` that the next iteration reads *first*. Reusable knowledge accretes across iterations instead of being trapped in per-round logs. The closest the harness gets is the architect's `<grill_log>`, which only captures pre-build decisions, not in-flight discoveries the builder makes mid-round. This is the single biggest borrow I'd take from the wider harness ecosystem.
-
-I'd also consider whether a lighter coding agent (smaller model, smaller context, smaller token budget) could cover the bulk of trivial issues at a fraction of the cost. Renames, log additions, dep bumps don't need a strongest-tier agent. I haven't tested this; the economics suggest there's something there.
+I'd test whether a lighter coding agent (smaller model, smaller context, smaller budget) covers the bulk of trivial issues at a fraction of the cost. Renames, log additions, dep bumps don't need a strongest-tier agent.
 
 ---
 
 ## Open questions
 
-Stuff I haven't proven and would want to nail down before recommending this for anyone else's serious work.
+Stuff I haven't proven and would want nailed down before recommending this for anyone else's serious work.
 
-I assume Claude Code limits sub-agent spawning to one level of depth. My notes say it's enforced. I haven't verified against current docs. If you build a deeper orchestrator, double-check.
+Claude Code's sub-agent depth limit. My notes say one level enforced. Unverified against current docs.
 
-I assume the harness is robust against adversarial issue bodies. I tested it against short, well-formed bodies. I didn't stress it against contradictory bodies, multi-language content, or prompt-injection attempts. The auditor's an LLM; it has the usual susceptibilities.
+Adversarial issue bodies. Tested only against short, well-formed bodies. Not stress-tested against contradictions, multi-language content, or prompt-injection.
 
-I assume single-tenant. If two operators run the harness against the same repo simultaneously, I don't know what happens. The defenses are gone. The audit trail interleaves.
+Concurrent operators. Defenses gone. The audit trail interleaves. Unknown failure mode.
 
-I assume the plugin cache footgun gets addressed at the Claude Code layer eventually. Today, editing source under a local clone doesn't refresh the runtime cache. The workaround is documented. It bit me at least once mid-session.
+Plugin cache staleness. Editing source under a local clone doesn't refresh the runtime cache. Workaround documented. Bit me at least once.
 
-I assume cross-mount worktree moves are uncommon. The bucket-move uses a single rename syscall, which fails across filesystem boundaries. Untested in container environments.
+Cross-mount worktree moves. The bucket-move uses a single rename syscall and fails across filesystem boundaries. Untested in containers.
 
 ---
 
 ## What I'd tell anyone starting from scratch
 
-A harness is a way to spend money instead of time. That's the whole pitch. If your time is worth more than five dollars an hour and the issue is well-scoped, the trade works. If your time is cheap or the issue is ambiguous, just open the PR yourself.
+A harness spends money instead of time. If your time is worth more than five dollars an hour and the issue is well-scoped, the trade works. If your time is cheap or the issue is ambiguous, open the PR yourself.
 
-Don't treat the harness as production infrastructure. Treat it as a POC substrate you'll refactor per project. What I built is roughly six hundred lines of state machine, intentionally hand-readable, intentionally opinionated. Adopters should expect to rewrite half of it for their workflow. The grill pattern, the role-scoped prompts, the XML schema, even the way I split builder from auditor: those are choices. None of them are requirements.
+Don't treat the harness as production infrastructure. Treat it as a POC substrate you'll refactor per project. What I built is ~600 lines of state machine, hand-readable, opinionated. Expect to rewrite half of it for your workflow. The grill, the role-scoped prompts, the XML schema, the builder-auditor split: choices, not requirements.
 
-The most useful artifact from this project, more than the code itself, is the contributing document I wrote alongside it. Read that first. Then decide if my opinions fit your team's.
+The most useful artifact from this project, more than the code, is the contributing document I wrote alongside. Read that first.
 
 ---
 
@@ -206,17 +204,17 @@ The most useful artifact from this project, more than the code itself, is the co
 
 **Patterns and inspiration:**
 
-- [OpenAI harness engineering](https://openai.com/index/harness-engineering/): the original inspiration
-- [Geoffrey Huntley on the Ralph loop](https://devinterrupted.substack.com/p/inventing-the-ralph-wiggum-loop-creator): the dominant production pattern for serious agentic coding work
-- [Ralph loop deep dive: from ReAct to Ralph](https://www.alibabacloud.com/blog/from-react-to-ralph-loop-a-continuous-iteration-paradigm-for-ai-agents_602799): the pattern lineage
-- [Codex /goal: OpenAI's built-in Ralph loop](https://ralphable.com/blog/codex-goal-command-ralph-loop-openai-built-in-autonomous-coding-agent-2026): confirms the pattern as mainstream
-- [How We Claude Code workshop](https://github.com/anthropics/cwc-workshops/tree/main/how-we-claude-code) and the [video walkthrough](https://www.youtube.com/watch?v=IlqJqcl8ONE): Anthropic's reference architecture for an interview-driven, verifiable agent flow
+- [OpenAI harness engineering](https://openai.com/index/harness-engineering/)
+- [Geoffrey Huntley on the Ralph loop](https://devinterrupted.substack.com/p/inventing-the-ralph-wiggum-loop-creator)
+- [Ralph loop deep dive](https://www.alibabacloud.com/blog/from-react-to-ralph-loop-a-continuous-iteration-paradigm-for-ai-agents_602799)
+- [Codex /goal: OpenAI's built-in Ralph loop](https://ralphable.com/blog/codex-goal-command-ralph-loop-openai-built-in-autonomous-coding-agent-2026)
+- [How We Claude Code workshop](https://github.com/anthropics/cwc-workshops/tree/main/how-we-claude-code) + [video](https://www.youtube.com/watch?v=IlqJqcl8ONE)
 
 **Reference implementations and alternative kits:**
 
-- [snarktank/ralph](https://github.com/snarktank/ralph): canonical Ralph implementation; ~113-line bash loop with `progress.txt` knowledge curation
-- [obra/superpowers](https://github.com/obra/superpowers): alternative Claude Code methodology kit; ~15 skills, multi-harness, plugin.json v5.1.0
-- [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/engineering): engineering-focused skills (grill-with-docs, triage, tdd); origin of the interview-grill pattern I applied
+- [snarktank/ralph](https://github.com/snarktank/ralph): canonical Ralph implementation, ~113-line bash loop
+- [obra/superpowers](https://github.com/obra/superpowers): alternative Claude Code methodology kit, ~15 skills, multi-harness
+- [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/engineering): engineering skills, origin of the interview-grill pattern
 
 **Technical references:**
 
