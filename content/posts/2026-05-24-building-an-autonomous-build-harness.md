@@ -147,9 +147,9 @@ Refusing concurrent builds eliminated complexity in the harness. No locks, no ra
 
 A harness spends money instead of time. If your time is worth more than a few dollars per useful change and the issue is well-scoped, the trade works. If your time is cheap or the issue is ambiguous, open the PR yourself.
 
-Don't treat the harness as production infrastructure. Treat it as a POC substrate you'll refactor per project. What I built is ~600 lines of state machine, opinionated. Expect to rewrite half. The grill, role-scoped prompts, XML schema, builder-auditor split: choices, not requirements.
+Don't treat the harness as production infrastructure. Treat it as a POC substrate you'll refactor per project. What I built is ~600 lines of state machine, opinionated. Expect to rewrite half.
 
-The most useful artifact from this project, more than the code, is the contributing document I wrote alongside. Read that first.
+The most useful artifact from this project, more than the code, is the contributing document. Read that first.
 
 ---
 
