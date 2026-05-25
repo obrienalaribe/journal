@@ -4,18 +4,17 @@ defaultContentLanguage = "en"
 title = "ob's journal"
 theme = "hugo-coder"
 
-paginate = 20
+paginate = 50
 enableEmoji = true
 
-# Posts at /journal/<slug>/ instead of /journal/posts/<slug>/
 [permalinks]
   posts = "/:slug/"
 
 [params]
   author = "OB"
-  description = "Notes on agent harnesses, dev tooling, and shipping POCs without burning engineering time."
+  description = "building, learning and sharing my thoughts"
   keywords = "agents, harness, claude-code, dev-tooling, llm"
-  info = ["Engineer", "Working on agent harnesses + dev tooling"]
+  info = ["building, learning and sharing my thoughts"]
   dateFormat = "January 2, 2006"
   since = 2026
   enableTwemoji = true
@@ -36,12 +35,7 @@ enableEmoji = true
 [[languages.en.menu.main]]
   name = "Posts"
   weight = 1
-  url = "/"
-
-[[languages.en.menu.main]]
-  name = "About"
-  weight = 2
-  url = "about/"
+  url = "posts/"
 
 [markup.goldmark.renderer]
   unsafe = true
