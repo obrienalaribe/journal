@@ -6,9 +6,9 @@ tags = ["agents", "harness-engineering", "claude-code", "ralph-loop", "hitl"]
 description = "A retrospective on building a single-tenant Claude Code plugin that drives a multi-phase build loop end-to-end. What worked, what broke, what I'd redo."
 +++
 
-> Retrospective on a Claude Code plugin I built called *buildkit*. The point: test whether the main agent in a session can act as a supervisor. Drive a workflow, resolve routine blocks, escalate the real decisions. The lessons generalize beyond the plugin. Fork the idea, not the code.
+> Retrospective on a Claude Code plugin I built called *buildkit*. The goal was to test using the main agent session as a supervisor to drive software delivery stages, resolve routine blocks and escalate decisions to human. Fork the idea, not the code.
 
-Most teams have ideas that don't justify dedicated engineering time: internal tools, POCs, side projects. An engineering harness can be useful for tasks like these.
+Most teams have ideas that don't justify dedicated engineering time: internal tools, POCs, side projects. A supervised engineering harness could be an option.
 
 A harness is the thin layer outside the model: the environment, constraints, and feedback loops that let an agent do useful work without a human watching every token. [OpenAI calls this harness engineering](https://openai.com/index/harness-engineering/) and runs Codex on it. [Claude Code's sub-agent model](https://docs.claude.com/en/docs/claude-code/sub-agents) lands in the same neighborhood.
 
@@ -59,6 +59,7 @@ What my harness is missing from Ralph: the human-curated learnings file. More be
 
 If you want something off the shelf, two are worth a look. [obra/superpowers](https://github.com/obra/superpowers) ships ~15 skills (brainstorming, planning, parallel agent dispatch, code review, worktree management, debugging, verification). Curated, v5.1.0, multi-harness. [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/engineering) ships tighter engineering skills (grill-with-docs, to-issues, triage, tdd, improve-codebase-architecture).
 
+A third pointer worth noting: [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents). Not a full harness, but the subagent dispatch primitive for the Pi stack (parent Pi session delegates to focused child agents: reviewer, scout, oracle, implementation, parallel audits). Different ecosystem from Claude Code, same orchestrator shape. The closest Claude Code analog is the built-in `Task` tool.
 My harness isn't competing with either. It contains two skills, a shared parser, ~600-LOC state-machine core (~830 LOC total), intentionally hand-readable and opinionated. Use superpowers or matt's if you want a full kit. Take mine if you want a simple scaffold to fork.
 
 ## Using AskUserQuestion Tool
@@ -157,7 +158,7 @@ Refusing concurrent builds eliminated complexity in the harness. No locks, no ra
 - **Consider a simple notification system.** Burning rounds silently is wasteful when a human could've intervened cheaply.
 - **Write at least one unit test of the merge path.** Two latent bugs survived multiple loops because the only test was live dogfooding. Five lines of test would've caught both at design time.
 - **Steal Ralph's `progress.txt` + `AGENTS.md` pattern.** Ralph curates a `## Codebase Patterns` section at the top of `progress.txt` that the next iteration reads first.
-- **Use a lighter coding agent.** Pi's minimal system prompt and extensibility lets you do actual context engineering: control what goes into the context window and how it's managed.
+- **Use a lighter coding agent.** Pi's minimal system prompt and extensibility lets you do actual context engineering: control what goes into the context window and how it's managed. [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents) is the practical primitive: parent Pi session delegates to focused child agents.
 
 ## What I'd tell anyone starting from scratch
 
@@ -186,6 +187,7 @@ The most useful artifact from this project, more than the code, is the contribut
 - [snarktank/ralph](https://github.com/snarktank/ralph): canonical Ralph implementation, ~113-line bash loop
 - [obra/superpowers](https://github.com/obra/superpowers): alternative Claude Code methodology kit, ~15 skills, multi-harness
 - [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/engineering): engineering skills, origin of the interview-grill pattern
+- [nicobailon/pi-subagents](https://github.com/nicobailon/pi-subagents): subagent dispatch primitive for the Pi stack; parent session delegates to focused child agents (reviewer, scout, oracle, parallel audits).
 - [obrienalaribe/bill-splitter](https://github.com/obrienalaribe/bill-splitter): the proof-of-work project this retrospective is grounded in. Built end-to-end by buildkit + the cwc-workshops three-phase flow.
 
 **Technical references:**
