@@ -6,11 +6,11 @@ tags = ["agents", "harness-engineering", "claude-code", "ralph-loop", "hitl"]
 description = "A retrospective on building a single-tenant Claude Code plugin that drives a multi-phase build loop end-to-end. What worked, what broke, what I'd redo."
 +++
 
-> Retrospective on a Claude Code plugin I built called *buildkit*. The goal was to test using the main agent session as a supervisor to drive software delivery stages, resolve routine blocks and escalate decisions to human. Fork the idea, not the code.
+> Retrospective on a plugin I built called *buildkit*. The goal was to test using the main agent session as a supervisor to drive software delivery stages, resolve routine blocks and escalate decisions to human. Fork the idea, not the code.
 
 Most teams have ideas that don't justify dedicated engineering time: internal tools, POCs, side projects. A supervised engineering harness could be an option.
 
-A harness is the thin layer outside the model: the environment, constraints, and feedback loops that let an agent do useful work without a human watching every token. [OpenAI calls this harness engineering](https://openai.com/index/harness-engineering/) and runs Codex on it. [Claude Code's sub-agent model](https://docs.claude.com/en/docs/claude-code/sub-agents) lands in the same neighborhood.
+A harness is the thin layer outside the model: the environment, constraints, and feedback loops that let an agent do useful work without a human watching every token. [OpenAI wrote about harness engineering](https://openai.com/index/harness-engineering/) and runs Codex on it. [Claude Code's sub-agent model](https://docs.claude.com/en/docs/claude-code/sub-agents) lands in the same neighborhood.
 
 A harness owns the lifecycle. The agents inside own the cognition. It pays off for repetitive work that still needs care, the kind that's expensive to do by hand and risky to fully automate.
 
@@ -18,14 +18,16 @@ The question I wanted to answer:
 
 > **Can the main agent in a Claude Code or Codex session serve as a supervisor: driving a multi-step workflow, resolving routine blocks in-flight, escalating only the genuinely ambiguous calls back to me or the team?**
 
-Not a one-shot prompt but a supervised session where the foreground agent supervises workers spawn per phase. The supervisor monitors and reads stage logs when blocked, patches and resumes, or escalates to a human.
+Not a one-shot prompt but a supervised session where the foreground agent supervises workers spawned on each phase. The supervisor monitors and reads stage logs when blocked, patches and resumes, or escalates to a human.
 
 The split I landed on is **afk versus hitl per work-unit**:
 
 - **afk** issues run the full loop (intake, build, proof, review, PR, merge) without me. I find out the work shipped when I see the merge.
-- **hitl** issues block at PR-open. They don't merge until I review the diff and post evidence.
+- **hitl** issues block at PR-open. They don't merge until I review the diff and post feedback with evidence.
 
 Below I describe where it held, where it broke, what I'd redo. Not best practice. Just what I figured out.
+
+---
 
 ## Proof of work
 
@@ -147,6 +149,8 @@ Two files are persisted per issue: a JSON state checkpoint and an append-only JS
 ## Single-tenant by choice
 
 Refusing concurrent builds eliminated complexity in the harness. No locks, no races, no shared-state coordination. This helped keep the design simple and avoid over-engineering.
+
+---
 
 ## What I'd redo
 
