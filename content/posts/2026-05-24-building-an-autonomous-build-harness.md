@@ -27,14 +27,20 @@ The split I landed on is **afk versus hitl per work-unit**:
 
 Below I describe where it held, where it broke, what I'd redo. Not best practice. Just what I figured out.
 
+## Proof of work
+
+The retrospective below is grounded in [bill-splitter](https://github.com/obrienalaribe/bill-splitter): a no-account, link-based bill splitter the buildkit harness built end-to-end following Anthropic's three-phase [How We Claude Code workshop](https://github.com/anthropics/cwc-workshops/tree/main/how-we-claude-code). Live demo: <TBD-vercel-url>.
+
+The repo's [`.buildkit/`](https://github.com/obrienalaribe/bill-splitter/tree/master/.buildkit) folder is the audit trail: `SPEC.md` (Phase 1 interview output), `DECISION.md` + `DESIGN.md` (Phase 2 divergent planning + chosen direction), `orchestrator-events.jsonl` (append-only log of every supervisor state transition during Phase 3 build), and `issues/` (per-slice contract + transcripts).
+
+The local dev verification dashboard at `http://localhost:5200/verify` follows the [phase-3-verify](https://github.com/anthropics/cwc-workshops/tree/main/how-we-claude-code/phase-3-verify) pattern: every component declares fixtures, invariants, and a machine-readable DOM contract that the dashboard exercises at runtime. The point is to make verification a first-class build artifact, not an afterthought test suite.
+
 ## When the harness is worth it
 
 Two conditions:
 
 1. **Clear outcome.** When the task has a measurable success (a bug fix, a hotfix, a route added). If a reviewer would know in two minutes, the harness can too.
-2. **Reduce human loops with agent.** Engineering time is scarce and should be spent on high-value work. Important-but-low-urgency tasks can be delegated to the harness.
-
-The rule I use: if I can write a one-paragraph spec naming inputs, outputs, and success checklist without "could" or "maybe", the harness fits. Otherwise no.
+2. **Reduce human loops with agent.** Engineers spend more time on Important and urgent work whilse the Important but low-urgency tasks can be delegated to the harness.
 
 ## How this compares to Ralph loops
 
@@ -180,6 +186,7 @@ The most useful artifact from this project, more than the code, is the contribut
 - [snarktank/ralph](https://github.com/snarktank/ralph): canonical Ralph implementation, ~113-line bash loop
 - [obra/superpowers](https://github.com/obra/superpowers): alternative Claude Code methodology kit, ~15 skills, multi-harness
 - [mattpocock/skills](https://github.com/mattpocock/skills/tree/main/skills/engineering): engineering skills, origin of the interview-grill pattern
+- [obrienalaribe/bill-splitter](https://github.com/obrienalaribe/bill-splitter): the proof-of-work project this retrospective is grounded in. Built end-to-end by buildkit + the cwc-workshops three-phase flow.
 
 **Technical references:**
 
