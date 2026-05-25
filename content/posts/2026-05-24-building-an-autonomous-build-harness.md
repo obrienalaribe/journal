@@ -29,7 +29,7 @@ Below I describe where it held, where it broke, what I'd redo. Not best practice
 
 ## Proof of work
 
-The retrospective below is grounded in [bill-splitter](https://github.com/obrienalaribe/bill-splitter): a no-account, link-based bill splitter the buildkit harness built end-to-end following Anthropic's three-phase [How We Claude Code workshop](https://github.com/anthropics/cwc-workshops/tree/main/how-we-claude-code). Live demo: https://bill-splitter-f77m4d8f1-obrienalaribes-projects.vercel.app/.
+The retrospective below is grounded in [bill-splitter](https://github.com/obrienalaribe/bill-splitter): a no-account, link-based bill splitter the buildkit harness built end-to-end following Anthropic's three-phase [How We Claude Code workshop](https://github.com/anthropics/cwc-workshops/tree/main/how-we-claude-code). Live demo: https://bill-splitter-sooty-six.vercel.app/.
 
 The repo's [`.buildkit/`](https://github.com/obrienalaribe/bill-splitter/tree/master/.buildkit) folder is the audit trail: `SPEC.md` (Phase 1 interview output), `DECISION.md` + `DESIGN.md` (Phase 2 divergent planning + chosen direction), `orchestrator-events.jsonl` (append-only log of every supervisor state transition during Phase 3 build), and `issues/` (per-slice contract + transcripts).
 
